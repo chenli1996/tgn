@@ -12,6 +12,8 @@ from evaluation.evaluation import eval_edge_prediction
 from model.tgn import TGN
 from utils.utils import EarlyStopMonitor, RandEdgeSampler, get_neighbor_finder
 from utils.data_processing import get_data, compute_time_statistics
+# import os
+# os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -20,7 +22,7 @@ np.random.seed(0)
 parser = argparse.ArgumentParser('TGN self-supervised training')
 parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',
                     default='wikipedia')
-parser.add_argument('--bs', type=int, default=200, help='Batch_size')
+parser.add_argument('--bs', type=int, default=2048, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
@@ -134,7 +136,8 @@ nn_test_rand_sampler = RandEdgeSampler(new_node_test_data.sources,
 # Set device
 device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
 device = torch.device(device_string)
-
+# device = 'cpu'
+# import pdb;pdb.set_trace()
 # Compute time statistics
 mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst = \
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)

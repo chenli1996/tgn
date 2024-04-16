@@ -11,7 +11,7 @@ import torch
 import numpy as np
 
 from model.tgn import TGN
-from utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP
+from utils.utils import EarlyStopMonitor, get_neighbor_finder, MLP,MLP4
 from utils.data_processing import compute_time_statistics, get_data_node_classification
 from evaluation.evaluation import eval_node_classification
 
@@ -23,13 +23,13 @@ torch.manual_seed(0)
 parser = argparse.ArgumentParser('TGN self-supervised training')
 parser.add_argument('-d', '--data', type=str, help='Dataset name (eg. wikipedia or reddit)',
                     default='wikipedia')
-parser.add_argument('--bs', type=int, default=100, help='Batch_size')
+parser.add_argument('--bs', type=int, default=256, help='Batch_size')
 parser.add_argument('--prefix', type=str, default='', help='Prefix to name the checkpoints')
 parser.add_argument('--n_degree', type=int, default=10, help='Number of neighbors to sample')
 parser.add_argument('--n_head', type=int, default=2, help='Number of heads used in attention layer')
-parser.add_argument('--n_epoch', type=int, default=10, help='Number of epochs')
+parser.add_argument('--n_epoch', type=int, default=20, help='Number of epochs')
 parser.add_argument('--n_layer', type=int, default=1, help='Number of network layers')
-parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
+parser.add_argument('--lr', type=float, default=3e-3, help='Learning rate')
 parser.add_argument('--patience', type=int, default=5, help='Patience for early stopping')
 parser.add_argument('--n_runs', type=int, default=1, help='Number of runs')
 parser.add_argument('--drop_out', type=float, default=0.1, help='Dropout probability')
@@ -126,6 +126,8 @@ train_ngh_finder = get_neighbor_finder(train_data, uniform=UNIFORM, max_node_idx
 device_string = 'cuda:{}'.format(GPU) if torch.cuda.is_available() else 'cpu'
 device = torch.device(device_string)
 
+
+
 # Compute time statistics
 mean_time_shift_src, std_time_shift_src, mean_time_shift_dst, std_time_shift_dst = \
   compute_time_statistics(full_data.sources, full_data.destinations, full_data.timestamps)
@@ -154,7 +156,9 @@ for i in range(args.n_runs):
   tgn = tgn.to(device)
 
   num_instance = len(train_data.sources)
+  num_instance_test = len(test_data.sources)
   num_batch = math.ceil(num_instance / BATCH_SIZE)
+  num_batch_test = math.ceil(num_instance_test / BATCH_SIZE)
   
   logger.debug('Num of training instances: {}'.format(num_instance))
   logger.debug('Num of batches per epoch: {}'.format(num_batch))
@@ -169,7 +173,8 @@ for i in range(args.n_runs):
   decoder = MLP(node_features.shape[1], drop=DROP_OUT)
   decoder_optimizer = torch.optim.Adam(decoder.parameters(), lr=args.lr)
   decoder = decoder.to(device)
-  decoder_loss_criterion = torch.nn.BCELoss()
+#   decoder_loss_criterion = torch.nn.BCELoss()
+  decoder_loss_criterion = torch.nn.MSELoss()
 
   val_aucs = []
   train_losses = []
@@ -210,14 +215,18 @@ for i in range(args.n_runs):
       labels_batch_torch = torch.from_numpy(labels_batch).float().to(device)
       pred = decoder(source_embedding).sigmoid()
       decoder_loss = decoder_loss_criterion(pred, labels_batch_torch)
+#       if k%100==0:
+#         print('pred',pred)
+#         print(labels_batch_torch)
       decoder_loss.backward()
       decoder_optimizer.step()
       loss += decoder_loss.item()
     train_losses.append(loss / num_batch)
-
-    val_auc = eval_node_classification(tgn, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
-                                       n_neighbors=NUM_NEIGHBORS)
-    val_aucs.append(val_auc)
+    val_auc =0
+    test_auc = 0
+#     val_auc = eval_node_classification(tgn, decoder, val_data, full_data.edge_idxs, BATCH_SIZE,
+#                                        n_neighbors=NUM_NEIGHBORS)
+#     val_aucs.append(val_auc)
 
     pickle.dump({
       "val_aps": val_aucs,
@@ -241,14 +250,51 @@ for i in range(args.n_runs):
     decoder.load_state_dict(torch.load(best_model_path))
     logger.info(f'Loaded the best model at epoch {early_stopper.best_epoch} for inference')
     decoder.eval()
-
-    test_auc = eval_node_classification(tgn, decoder, test_data, full_data.edge_idxs, BATCH_SIZE,
-                                        n_neighbors=NUM_NEIGHBORS)
+    
+#     test_auc = eval_node_classification(tgn, decoder, test_data, full_data.edge_idxs, BATCH_SIZE,
+#                                         n_neighbors=NUM_NEIGHBORS)
   else:
     # If we are not using a validation set, the test performance is just the performance computed
     # in the last epoch
-    test_auc = val_aucs[-1]
+    pass
+#     test_auc = val_aucs[-1]
+  loss = 0
     
+  for k in range(num_batch):
+      s_idx = k * BATCH_SIZE
+        
+      if s_idx + BATCH_SIZE> num_instance_test:
+        break
+      e_idx = min(num_instance_test, s_idx + BATCH_SIZE)
+
+      sources_batch = test_data.sources[s_idx: e_idx]
+      destinations_batch = test_data.destinations[s_idx: e_idx]
+      timestamps_batch = test_data.timestamps[s_idx: e_idx]
+      edge_idxs_batch = full_data.edge_idxs[s_idx: e_idx]
+    
+#       labels_batch = test_data.labels[s_idx: e_idx]
+      labels_batch = test_data.labels[s_idx: e_idx]        
+
+      size = len(sources_batch)
+
+      decoder_optimizer.zero_grad()
+      with torch.no_grad():
+        source_embedding, destination_embedding, _ = tgn.compute_temporal_embeddings(sources_batch,
+                                                                                     destinations_batch,
+                                                                                     destinations_batch,
+                                                                                     timestamps_batch,
+                                                                                     edge_idxs_batch,
+                                                                                     NUM_NEIGHBORS)
+
+      labels_batch_torch = torch.from_numpy(labels_batch).float().to(device)
+      pred = decoder(source_embedding)#.sigmoid()
+      decoder_loss = decoder_loss_criterion(pred, labels_batch_torch)
+      decoder_loss.backward()
+      decoder_optimizer.step()
+      loss += decoder_loss.item()
+  print(loss / num_batch_test)
+#   print()
+#   decoder_loss = decoder_loss_criterion(pred_prob, data_labels)
   pickle.dump({
     "val_aps": val_aucs,
     "test_ap": test_auc,
